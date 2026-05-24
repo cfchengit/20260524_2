@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>臺北市教育統計 × p5.js 手勢版（即時 OpenData）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;700&family=Oxanium:wght@400;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.3/p5.min.js"></script>
+<script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#fff;overflow:hidden}
+  canvas{display:block}
+</style>
+</head>
+<body>
+<script>
+
+/* ══════════════════════════════════════════════════════
+   臺北市教育統計儀表板 — p5.js 手勢版（即時 OpenData）
+   資料：臺北市資料大平臺 data.taipei（BIG-5 CSV 即時讀取）
+   手勢：ml5.js HandPose，右手食指移動，捏合點擊
+══════════════════════════════════════════════════════ */
+
+// ══════════════════════════════════════════════════════
+// OpenData API 設定
+// ══════════════════════════════════════════════════════
+const API_BASE = 'https://data.taipei/api/frontstage/tpeod/dataset/resource.download?rid=';
+const API_RIDS = {
+  schools:  '591e2881-c8cf-429b-a758-323322aeafbb', // 臺北市校數
+  students: 'e9879dd5-0d52-48dc-83f6-62e6d13c48b6', // 臺北市國小學生數按年級分
+  classes:  'ca5699b7-fe98-409b-847a-2b3252d9fe0d', // 臺北市各級學校班級數
+};
+const API_SOURCES = {
+  schools:  'https://data.taipei/dataset/detail?id=a458af5c-bb5b-40d1-867e-f9c3fff1cfc8',
+  students: 'https://data.taipei/dataset/detail?id=ba85c45e-d755-44e0-afbb-d01b578450fc',
+  classes:  'https://data.taipei/dataset/detail?id=15f67bd1-8ae1-4acc-96df-2a853a83b3ec',
+};
+
+// ══════════════════════════════════════════════════════
+// 資料容器（由 API 填充，失敗則回填備用資料）
+// ══════════════════════════════════════════════════════
+let DIST_DATA   = [];  // [{name,kinder,elem,junior,senior,special,total}, ...]
+let STUDENT_DATA= [];  // [{year,total,g:[6]}, ...]
+let CLASS_DATA  = [];  // [{year,senior,junior,elem}, ...]
+let SCHOOL_META = [
+  {label:'幼兒園',  c:[115,85,210]},
+  {label:'國民小學',c:[0,155,140]},
+  {label:'高中職',  c:[200,60,60]},
+  {label:'國民中學',c:[30,120,210]},
+  {label:'特殊學校',c:[180,110,15]},
+];
+let SCHOOL_ALL  = [573,147,69,59,4]; // 全市各學制總數（即時更新）
+let DIST_MAX    = 128;               // 行政區最大學校數（即時更新）
+const GRADE_LABELS=['一','二','三','四','五','六'];
+const GRADE_COLORS=[[200,60,60],[180,110,15],[115,85,210],[30,120,210],[0,155,140],[30,160,70]];
+
+// 備用嵌入資料（API 無法連線時使用）
+const FB_DIST = [
+  {name:'大安',kinder:97,elem:14,junior:7, senior:10,special:0,total:128},
+  {name:'內湖',kinder:72,elem:13,junior:6, senior:6, special:2,total:99},
+  {name:'士林',kinder:61,elem:19,junior:6, senior:7, special:0,total:93},
+  {name:'文山',kinder:53,elem:22,junior:6, senior:11,special:0,total:92},
+  {name:'北投',kinder:51,elem:16,junior:6, senior:6, special:0,total:79},
+  {name:'松山',kinder:55,elem:8, junior:4, senior:3, special:0,total:70},
+  {name:'中山',kinder:41,elem:11,junior:5, senior:5, special:0,total:62},
+  {name:'中正',kinder:36,elem:8, junior:5, senior:6, special:1,total:56},
+  {name:'信義',kinder:32,elem:8, junior:4, senior:5, special:0,total:49},
+  {name:'萬華',kinder:27,elem:12,junior:3, senior:2, special:1,total:45},
+  {name:'南港',kinder:31,elem:7, junior:2, senior:3, special:0,total:43},
+  {name:'大同',kinder:17,elem:9, junior:5, senior:5, special:0,total:36},
+];
+const FB_STUDENT = [
+  {year:103,total:121218,g:[20101,19577,19291,20018,20235,21996]},
+  {year:104,total:118471,g:[19301,20040,19533,19272,20060,20265]},
+  {year:105,total:116496,g:[18542,19179,19957,19464,19327,20027]},
+  {year:106,total:115679,g:[19372,18436,19138,19897,19536,19300]},
+  {year:107,total:118097,g:[22117,19205,18337,19074,19852,19512]},
+  {year:108,total:120623,g:[22097,21995,19170,18324,19115,19922]},
+  {year:109,total:122605,g:[21093,22224,22120,19276,18564,19328]},
+  {year:110,total:125093,g:[21982,20964,22092,22071,19381,18603]},
+  {year:111,total:127285,g:[21097,21876,20846,21967,22129,19370]},
+  {year:112,total:127398,g:[19590,21027,21822,20765,22071,22123]},
+  {year:113,total:122987,g:[17808,19506,21012,21727,20843,22091]},
+];
+const FB_CLASS = [
+  {year:103,senior:3124,junior:2747,elem:4756},
+  {year:104,senior:3042,junior:2675,elem:4622},
+  {year:105,senior:2972,junior:2576,elem:4537},
+  {year:106,senior:2873,junior:2495,elem:4480},
+  {year:107,senior:2761,junior:2432,elem:4571},
+  {year:108,senior:2664,junior:2392,elem:4608},
+  {year:109,senior:2590,junior:2349,elem:4609},
+  {year:110,senior:2521,junior:2314,elem:4672},
+  {year:111,senior:2476,junior:2281,elem:4737},
+  {year:112,senior:2458,junior:2260,elem:4746},
+  {year:113,senior:2441,junior:2289,elem:4635},
+];
+
+// ══════════════════════════════════════════════════════
+// CSV 擷取與解析工具函式
+// ══════════════════════════════════════════════════════
+// 擷取 BIG-5 編碼的 CSV，回傳 {success, headers, rows}
+async function fetchBig5CSV(url){
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error('HTTP '+resp.status);
+  const buf  = await resp.arrayBuffer();
+  const text = new TextDecoder('big5').decode(buf);
+  const lines = text.trim().split(/\r?\n/).filter(l=>l.trim());
+  if(lines.length<2) throw new Error('空 CSV');
+  const headers = parseCsvLine(lines[0]);
+  const rows = lines.slice(1).map(l=>{
+    const cols=parseCsvLine(l);
+    const obj={};
+    headers.forEach((h,i)=>obj[h.trim()]=(cols[i]||'').trim());
+    return obj;
+  });
+  return {success:true, headers, rows};
+}
+
+// 簡易 CSV 行解析（支援引號）
+function parseCsvLine(line){
+  const r=[]; let cur='', inQ=false;
+  for(const ch of line){
+    if(ch==='"'){inQ=!inQ;}
+    else if(ch===','&&!inQ){r.push(cur);cur='';}
+    else cur+=ch;
+  }
+  r.push(cur);
+  return r;
+}
+
+// 解析校數 CSV → 填充 DIST_DATA 與 SCHOOL_ALL
+// 欄位順序：項次,民國年,學制,校數/總計,國立,市立,私立,松山,信義,大安,中山,中正,大同,萬華,文山,南港,內湖,士林,北投
+function parseSchoolsCSV(rows){
+  const DIST_ORDER=['松山','信義','大安','中山','中正','大同','萬華','文山','南港','內湖','士林','北投'];
+  const distMap={};
+  DIST_ORDER.forEach(d=>distMap[d]={name:d,kinder:0,elem:0,junior:0,senior:0,special:0,total:0});
+  const totals={kinder:0,elem:0,senior:0,junior:0,special:0};
+  let dataYear=0;
+
+  rows.forEach(row=>{
+    const cols=Object.values(row);
+    if(cols.length<8) return;
+    dataYear=parseInt(cols[1])||dataYear;
+    const typeStr=String(cols[2]||'');
+    let key='';
+    if(typeStr.includes('幼'))                     key='kinder';
+    else if(typeStr.includes('小')&&!typeStr.includes('中')) key='elem';
+    else if(typeStr.includes('國中')||typeStr.includes('中學')) key='junior';
+    else if(typeStr.includes('高')||typeStr.includes('中等'))   key='senior';
+    else if(typeStr.includes('特'))                 key='special';
+    if(!key) return;
+    totals[key]=parseInt(cols[3])||0;
+    DIST_ORDER.forEach((d,di)=>{
+      distMap[d][key]=parseInt(cols[7+di])||0;
+    });
+  });
+
+  // 組合並排序（按 total 降序）
+  DIST_DATA=DIST_ORDER.map(d=>{
+    const dd=distMap[d];
+    dd.total=dd.kinder+dd.elem+dd.junior+dd.senior+dd.special;
+    return dd;
+  }).sort((a,b)=>b.total-a.total);
+
+  DIST_MAX=Math.max(...DIST_DATA.map(d=>d.total),1);
+  // SCHOOL_ALL 順序對應 SCHOOL_META 順序
+  SCHOOL_ALL=[totals.kinder,totals.elem,totals.senior,totals.junior,totals.special];
+  return dataYear;
+}
+
+// 解析學生數 CSV → [{year,total,g:[6]}]
+// 欄位順序：項次,學年度,國小總計,一年級,...,六年級
+function parseStudentCSV(rows){
+  return rows.map(row=>{
+    const cols=Object.values(row);
+    if(cols.length<8) return null;
+    const year=parseInt(cols[1])||0;
+    if(!year) return null;
+    return{year, total:parseInt(cols[2])||0,
+      g:[cols[3],cols[4],cols[5],cols[6],cols[7],cols[8]].map(v=>parseInt(v)||0)};
+  }).filter(Boolean).sort((a,b)=>a.year-b.year);
+}
+
+// 解析班級數 CSV → [{year,senior,junior,elem}]
+// 欄位順序：項次,民國年,高級中等學校,國民中學,國民小學
+function parseClassCSV(rows){
+  return rows.map(row=>{
+    const cols=Object.values(row);
+    if(cols.length<4) return null;
+    const year=parseInt(cols[1])||0;
+    if(!year) return null;
+    return{year, senior:parseInt(cols[2])||0, junior:parseInt(cols[3])||0, elem:parseInt(cols[4])||0};
+  }).filter(Boolean).sort((a,b)=>a.year-b.year);
+}
+
+// ══════════════════════════════════════════════════════
+// 主要載入流程
+// ══════════════════════════════════════════════════════
+let dataReady=false, loadProg=0, loadMsg='初始化中…';
+let dataSource={schools:'備用',students:'備用',classes:'備用'}; // 記錄每個資料集來源
+let schoolsDataYear=113; // 校數資料的民國年（由 CSV 讀取）
+
+async function loadOpenData(){
+  loadMsg='連線臺北市資料大平臺 data.taipei…';
+  loadProg=0.1;
+
+  // 並行嘗試擷取三個資料集
+  const [schRes,stuRes,clsRes]=await Promise.allSettled([
+    fetchBig5CSV(API_BASE+API_RIDS.schools),
+    fetchBig5CSV(API_BASE+API_RIDS.students),
+    fetchBig5CSV(API_BASE+API_RIDS.classes),
+  ]);
+
+  loadMsg='解析 CSV（BIG-5 編碼）…'; loadProg=0.6;
+
+  // ── 校數 ──────────────────────────────────────────
+  if(schRes.status==='fulfilled'&&schRes.value.success){
+    schoolsDataYear=parseSchoolsCSV(schRes.value.rows);
+    dataSource.schools='data.taipei API（即時）';
+  } else {
+    console.warn('校數 API 失敗，使用備用資料：',schRes.reason||'');
+    DIST_DATA=[...FB_DIST.map(d=>({...d}))];
+    DIST_MAX=128; SCHOOL_ALL=[573,147,69,59,4];
+    dataSource.schools='備用嵌入資料';
+  }
+
+  // ── 學生數 ────────────────────────────────────────
+  if(stuRes.status==='fulfilled'&&stuRes.value.success){
+    const parsed=parseStudentCSV(stuRes.value.rows);
+    if(parsed.length>0){STUDENT_DATA=parsed;dataSource.students='data.taipei API（即時）';}
+    else{STUDENT_DATA=[...FB_STUDENT];dataSource.students='備用（API 解析失敗）';}
+  } else {
+    STUDENT_DATA=[...FB_STUDENT];
+    dataSource.students='備用嵌入資料';
+  }
+
+  // ── 班級數 ────────────────────────────────────────
+  if(clsRes.status==='fulfilled'&&clsRes.value.success){
+    const parsed=parseClassCSV(clsRes.value.rows);
+    if(parsed.length>0){CLASS_DATA=parsed;dataSource.classes='data.taipei API（即時）';}
+    else{CLASS_DATA=[...FB_CLASS];dataSource.classes='備用（API 解析失敗）';}
+  } else {
+    CLASS_DATA=[...FB_CLASS];
+    dataSource.classes='備用嵌入資料';
+  }
+
+  loadMsg='初始化儀表板…'; loadProg=0.85;
+
+  // 動態初始化：依實際資料範圍設定
+  const startYear=STUDENT_DATA[0].year;
+  const endYear=STUDENT_DATA[STUDENT_DATA.length-1].year;
+  selectedYear=endYear;
+  compareYear=null;
+
+  selDistSet=new Set(DIST_DATA.map((_,i)=>i));
+  distAlpha=new Array(DIST_DATA.length).fill(1.0);
+  distAlphaT=new Array(DIST_DATA.length).fill(1.0);
+  schoolNorm=new Array(5).fill(0);
+  schoolNormT=new Array(5).fill(0);
+  filteredCnts=[...SCHOOL_ALL];
+  distNorm=new Array(DIST_DATA.length).fill(0);
+  distNormT=DIST_DATA.map(d=>d.total/DIST_MAX);
+  gradeNorm=new Array(6).fill(0); gradeNormT=new Array(6).fill(0);
+  gradeNormC=new Array(6).fill(0); gradeNormCT=new Array(6).fill(0);
+  classNorm=new Array(3).fill(0); classNormT=new Array(3).fill(0);
+  classNormC=new Array(3).fill(0); classNormCT=new Array(3).fill(0);
+
+  buildButtons();
+  setTargets();
+
+  loadProg=1.0;
+  const allApi=Object.values(dataSource).every(s=>s.includes('即時'));
+  loadMsg=allApi?'✓ 全部資料已從 data.taipei 即時載入！':
+    '✓ 資料載入完成（部分使用備用資料）';
+
+  await new Promise(r=>setTimeout(r,700));
+  dataReady=true;
+}
+
+// ══════════════════════════════════════════════════════
+// 色彩系統（白底）
+// ══════════════════════════════════════════════════════
+const C={
+  bg:[252,253,255],surf:[240,245,252],card:[228,237,250],
+  teal:[0,155,140],blue:[30,120,210],coral:[200,60,60],
+  amber:[180,110,15],violet:[115,85,210],green:[30,160,70],
+  txt:[20,35,60],txt2:[70,100,140],txt3:[130,155,185],
+};
+
+// 座標常數
+const Y0={
+  hdrEnd:63,yearStart:68,yearEnd:155,
+  kpiStart:160,kpiEnd:202,tabStart:207,tabEnd:243,chartStart:248,
+};
+
+// ══════════════════════════════════════════════════════
+// 應用狀態
+// ══════════════════════════════════════════════════════
+let selectedYear=113, compareYear=null, activeTab=0;
+
+// 行政區篩選
+let selDistSet=new Set(), distAlpha=[], distAlphaT=[];
+// 動畫正規化值（0~1）
+let schoolNorm=new Array(5).fill(0),schoolNormT=new Array(5).fill(0);
+let filteredCnts=[...SCHOOL_ALL];
+let distNorm=[],distNormT=[];
+let gradeNorm=new Array(6).fill(0),gradeNormT=new Array(6).fill(0);
+let gradeNormC=new Array(6).fill(0),gradeNormCT=new Array(6).fill(0);
+let classNorm=new Array(3).fill(0),classNormT=new Array(3).fill(0);
+let classNormC=new Array(3).fill(0),classNormCT=new Array(3).fill(0);
+let lineDrawPct=0,lineDrawPctT=1,flashAlpha=0;
+let kpiA={students:0,senior:0,junior:0,elem:0,avgClass:0};
+let kpiT={students:0,senior:0,junior:0,elem:0,avgClass:0};
+
+// 按鈕
+let yearBtns=[],cmpBtns=[],tabBtns=[],distChips=[];
+let hoverYearIdx=-1,hoverCmpIdx=-1,hoverTabIdx=-1,hoverDistIdx=-1;
+let tooltip={show:false,x:0,y:0,lines:[]};
+let barHits=[],bgParts=[],clickFx=[];
+
+// 手勢辨識
+let handPose=null,video=null,hands=[];
+let fingerX=-1,fingerY=-1;
+let isPinching=false,wasPinching=false,pinchDebounce=0;
+let gestureEnabled=true;
+let pinchLockX=-1,pinchLockY=-1,pinchApproaching=false;
+let pinchDist=999;
+let gestureReady=false,gestureMsg='攝影機啟動中…';
+let gestureBtnRect={x:0,y:0,w:128,h:30};
+const camW=320,camH=240;
+
+function preload(){ try{handPose=ml5.handPose({flipped:true});}catch(e){} }
+
+function setup(){
+  createCanvas(windowWidth,windowHeight);
+  textFont('Noto Sans TC');
+  frameRate(60);
+  for(let i=0;i<45;i++) bgParts.push(mkBgPt());
+
+  // 啟動攝影機
+  if(handPose){
+    try{
+      video=createCapture(VIDEO,()=>{
+        video.size(camW,camH); video.hide();
+        handPose.detectStart(video,r=>{hands=r;});
+        gestureReady=true;
+        gestureMsg='👆 食指移動 ｜ 捏合點擊';
+      });
+    }catch(e){gestureMsg='攝影機無法使用';}
+  }else{gestureMsg='手勢辨識不可用（滑鼠模式）';}
+
+  // 非同步載入 OpenData
+  loadOpenData().catch(e=>{
+    console.error('loadOpenData 失敗：',e);
+    DIST_DATA=[...FB_DIST.map(d=>({...d}))];
+    STUDENT_DATA=[...FB_STUDENT]; CLASS_DATA=[...FB_CLASS];
+    DIST_MAX=128; SCHOOL_ALL=[573,147,69,59,4];
+    filteredCnts=[...SCHOOL_ALL];
+    selDistSet=new Set(DIST_DATA.map((_,i)=>i));
+    distAlpha=new Array(12).fill(1); distAlphaT=new Array(12).fill(1);
+    distNorm=new Array(12).fill(0); distNormT=DIST_DATA.map(d=>d.total/DIST_MAX);
+    buildButtons(); setTargets(); dataReady=true;
+  });
+}
+function gotHands(r){hands=r;}
+function mkBgPt(){
+  return{x:random(width),y:random(height),vx:random(-0.15,0.15),vy:random(-0.12,0.08),
+    r:random(2,5),alpha:random(12,45),
+    col:random([[0,155,140],[30,120,210],[115,85,210],[200,60,60]]),
+    life:random(0,1),speed:random(0.002,0.004)};
+}
+
+// ══════════════════════════════════════════════════════
+// 計算輔助：年度索引（動態）
+// ══════════════════════════════════════════════════════
+function yearIdxOf(year){
+  return STUDENT_DATA.findIndex(d=>d.year===year);
+}
+function classIdxOf(year){
+  return CLASS_DATA.findIndex(d=>d.year===year);
+}
+
+// ══════════════════════════════════════════════════════
+// buildButtons（依實際資料年度動態建立）
+// ══════════════════════════════════════════════════════
+function buildButtons(){
+  yearBtns=[]; cmpBtns=[];
+  const years=STUDENT_DATA.map(d=>d.year);
+  const bw=Math.min(52,Math.floor((width-80)/(years.length*1.12)));
+  const bGap=Math.floor(bw*0.1);
+  const tw=years.length*(bw+bGap)-bGap;
+  let sx=(width-tw)/2;
+  years.forEach((y,i)=>{
+    yearBtns.push({x:sx+i*(bw+bGap),y:Y0.yearStart+4,w:bw,h:28,year:y});
+    cmpBtns.push({x:sx+i*(bw+bGap),y:Y0.yearStart+40,w:bw,h:24,year:y});
+  });
+  tabBtns=[];
+  ['🏫 學校分佈','📈 學生趨勢','📚 班級統計'].forEach((lbl,i)=>
+    tabBtns.push({x:30+i*155,y:Y0.tabStart+1,w:148,h:34,label:lbl}));
+  distChips=[];
+  DIST_DATA.forEach((d,i)=>{
+    const col=i%6,row=Math.floor(i/6);
+    distChips.push({x:col*92,y:row*28,w:86,h:24,idx:i,name:d.name});
+  });
+}
+
+// ══════════════════════════════════════════════════════
+// setTargets（動態年度索引）
+// ══════════════════════════════════════════════════════
+function setTargets(){
+  if(!STUDENT_DATA.length||!CLASS_DATA.length) return;
+  const yi=yearIdxOf(selectedYear);
+  const ci=compareYear!=null?yearIdxOf(compareYear):null;
+  const cyi=compareYear!=null?classIdxOf(compareYear):null;
+  const cii=classIdxOf(selectedYear);
+  if(yi<0||cii<0) return;
+
+  const sd=STUDENT_DATA[yi], cd=CLASS_DATA[cii];
+  kpiT.students=sd.total; kpiT.senior=cd.senior;
+  kpiT.junior=cd.junior;  kpiT.elem=cd.elem;
+  kpiT.avgClass=Math.round(sd.total/cd.elem);
+
+  updateSchoolFilter();
+  DIST_DATA.forEach((_,i)=>{distAlphaT[i]=selDistSet.has(i)?1.0:0.15;});
+  distNormT=DIST_DATA.map(d=>d.total/DIST_MAX);
+
+  const maxG=Math.max(...sd.g);
+  gradeNormT=sd.g.map(v=>v/maxG);
+  if(ci!=null&&ci>=0){
+    const cs=STUDENT_DATA[ci]; gradeNormCT=cs.g.map(v=>v/maxG);
+    const cc=CLASS_DATA[cyi>=0?cyi:cii];
+    const mxc=Math.max(cd.senior,cd.junior,cd.elem);
+    classNormCT=[cc.senior/mxc,cc.junior/mxc,cc.elem/mxc];
+  }else{gradeNormCT=new Array(6).fill(0);classNormCT=new Array(3).fill(0);}
+
+  const maxC=Math.max(cd.senior,cd.junior,cd.elem);
+  classNormT=[cd.senior/maxC,cd.junior/maxC,cd.elem/maxC];
+  lineDrawPct=0; lineDrawPctT=1;
+}
+function updateSchoolFilter(){
+  const cnts=[0,0,0,0,0];
+  selDistSet.forEach(i=>{
+    cnts[0]+=DIST_DATA[i].kinder; cnts[1]+=DIST_DATA[i].elem;
+    cnts[2]+=DIST_DATA[i].senior; cnts[3]+=DIST_DATA[i].junior;
+    cnts[4]+=DIST_DATA[i].special;
+  });
+  filteredCnts=[...cnts];
+  const mx=Math.max(...cnts,1);
+  schoolNormT=cnts.map(c=>c/mx);
+}
+
+// ══════════════════════════════════════════════════════
+// 動畫更新
+// ══════════════════════════════════════════════════════
+function updateAnims(){
+  const e=0.07;
+  for(const k in kpiA) kpiA[k]+=(kpiT[k]-kpiA[k])*e;
+  lineDrawPct+=(lineDrawPctT-lineDrawPct)*0.04;
+  flashAlpha=Math.max(0,flashAlpha-5);
+  for(let i=0;i<5;i++) schoolNorm[i]+=(schoolNormT[i]-schoolNorm[i])*e;
+  DIST_DATA.forEach((_,i)=>{
+    if(i<distNorm.length) distNorm[i]+=(distNormT[i]-distNorm[i])*e;
+    if(i<distAlpha.length) distAlpha[i]+=(distAlphaT[i]-distAlpha[i])*0.09;
+  });
+  for(let i=0;i<6;i++){
+    gradeNorm[i]+=(gradeNormT[i]-gradeNorm[i])*e;
+    gradeNormC[i]+=(gradeNormCT[i]-gradeNormC[i])*e;
+  }
+  for(let i=0;i<3;i++){
+    classNorm[i]+=(classNormT[i]-classNorm[i])*e;
+    classNormC[i]+=(classNormCT[i]-classNormC[i])*e;
+  }
+  bgParts.forEach(p=>{
+    p.x+=p.vx; p.y+=p.vy; p.life+=p.speed;
+    if(p.life>1)p.life=0;
+    if(p.x<0)p.x=width; if(p.x>width)p.x=0;
+    if(p.y<0)p.y=height; if(p.y>height)p.y=0;
+  });
+  clickFx=clickFx.filter(p=>p.a>4);
+  clickFx.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=0.12;p.vx*=0.94;p.vy*=0.94;p.a-=7;p.r*=0.97;});
+}
+
+// ══════════════════════════════════════════════════════
+// 手勢辨識
+// ══════════════════════════════════════════════════════
+function processGesture(){
+  if(!gestureEnabled){fingerX=-1;fingerY=-1;isPinching=false;pinchApproaching=false;pinchLockX=-1;pinchLockY=-1;return;}
+  if(!gestureReady||hands.length===0){pinchDebounce=Math.max(0,pinchDebounce-1);return;}
+  let hand=hands[0];
+  if(hands.length>1) hand=hands.reduce((b,h)=>h.keypoints[8].x>b.keypoints[8].x?h:b);
+  const idx=hand.keypoints[8], thm=hand.keypoints[4];
+  const rawX=map(idx.x,0,camW,0,width), rawY=map(idx.y,0,camH,0,height);
+  const dx=idx.x-thm.x, dy=idx.y-thm.y;
+  pinchDist=Math.sqrt(dx*dx+dy*dy);
+  const PRE=65, ACT=38;
+  if(pinchDist<PRE&&!pinchApproaching&&!isPinching){pinchApproaching=true;pinchLockX=rawX;pinchLockY=rawY;}
+  if(pinchDist>=PRE){pinchApproaching=false;pinchLockX=-1;pinchLockY=-1;}
+  fingerX=(pinchApproaching||isPinching)&&pinchLockX>=0?pinchLockX:rawX;
+  fingerY=(pinchApproaching||isPinching)&&pinchLockY>=0?pinchLockY:rawY;
+  updateHoverState(fingerX,fingerY);
+  wasPinching=isPinching; isPinching=pinchDist<ACT;
+  if(isPinching&&!wasPinching&&pinchDebounce<=0){
+    const cx=pinchLockX>=0?pinchLockX:fingerX, cy=pinchLockY>=0?pinchLockY:fingerY;
+    handleClick(cx,cy); pinchDebounce=50; addClickFx(cx,cy,[200,50,50]);
+  }
+  if(pinchDebounce>0) pinchDebounce--;
+}
+
+// ══════════════════════════════════════════════════════
+// 互動（滑鼠 ＆ 手勢共用）
+// ══════════════════════════════════════════════════════
+function updateHoverState(x,y){
+  hoverYearIdx=-1;hoverCmpIdx=-1;hoverTabIdx=-1;hoverDistIdx=-1;
+  yearBtns.forEach((b,i)=>{if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h)hoverYearIdx=i;});
+  cmpBtns.forEach((b,i)=>{if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h)hoverCmpIdx=i;});
+  tabBtns.forEach((b,i)=>{if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h)hoverTabIdx=i;});
+  if(activeTab===0) distChips.forEach((ch,i)=>{
+    const cx=30+ch.x,cy=Y0.chartStart+22+ch.y;
+    if(x>=cx&&x<=cx+ch.w&&y>=cy&&y<=cy+ch.h)hoverDistIdx=i;
+  });
+}
+function handleClick(x,y){
+  const gb=gestureBtnRect;
+  if(x>=gb.x&&x<=gb.x+gb.w&&y>=gb.y&&y<=gb.y+gb.h){
+    gestureEnabled=!gestureEnabled;
+    if(!gestureEnabled){fingerX=-1;fingerY=-1;isPinching=false;wasPinching=false;pinchApproaching=false;pinchLockX=-1;pinchLockY=-1;}
+    flashAlpha=20; addClickFx(gb.x+gb.w/2,gb.y+gb.h/2,gestureEnabled?C.teal:C.coral); return;
+  }
+  yearBtns.forEach(b=>{
+    if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h&&b.year!==selectedYear){
+      selectedYear=b.year;flashAlpha=30;setTargets();addClickFx(b.x+b.w/2,b.y+b.h/2,C.teal);
+    }
+  });
+  cmpBtns.forEach(b=>{
+    if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h){
+      compareYear=(b.year===compareYear)?null:b.year;flashAlpha=22;setTargets();addClickFx(b.x+b.w/2,b.y+b.h/2,C.amber);
+    }
+  });
+  tabBtns.forEach((b,i)=>{
+    if(x>=b.x&&x<=b.x+b.w&&y>=b.y&&y<=b.y+b.h&&i!==activeTab){
+      activeTab=i;flashAlpha=22;lineDrawPct=0;lineDrawPctT=1;
+    }
+  });
+  if(activeTab===0){
+    distChips.forEach(ch=>{
+      const cx=30+ch.x,cy=Y0.chartStart+22+ch.y;
+      if(x>=cx&&x<=cx+ch.w&&y>=cy&&y<=cy+ch.h){
+        if(selDistSet.has(ch.idx)){selDistSet.delete(ch.idx);distAlphaT[ch.idx]=0.15;}
+        else{selDistSet.add(ch.idx);distAlphaT[ch.idx]=1.0;}
+        updateSchoolFilter();addClickFx(cx+ch.w/2,cy+ch.h/2,C.teal);
+      }
+    });
+    const _oy=4,allY=Y0.chartStart+_oy+1,allX=30+72;
+    if(x>=allX&&x<=allX+38&&y>=allY&&y<=allY+15){
+      DIST_DATA.forEach((_,i)=>{selDistSet.add(i);distAlphaT[i]=1.0;});
+      updateSchoolFilter();addClickFx(allX+19,allY+8,C.teal);
+    }
+    const clrX=allX+44;
+    if(x>=clrX&&x<=clrX+38&&y>=allY&&y<=allY+15){
+      selDistSet.clear();DIST_DATA.forEach((_,i)=>{distAlphaT[i]=0.15;});
+      updateSchoolFilter();addClickFx(clrX+19,allY+8,C.coral);
+    }
+  }
+}
+
+// ══════════════════════════════════════════════════════
+// DRAW 主迴圈
+// ══════════════════════════════════════════════════════
+function draw(){
+  background(...C.bg);
+  drawBgParts();
+  if(!dataReady){ drawLoadingScreen(); return; }
+  updateAnims();
+  processGesture();
+  barHits=[];
+  drawHeader(); drawYearBar(); drawKPIs(); drawTabBar();
+  push(); translate(0,Y0.chartStart);
+    if(activeTab===0) drawTabSchool();
+    if(activeTab===1) drawTabTrend();
+    if(activeTab===2) drawTabClass();
+  pop();
+  drawClickFx(); drawTooltip(); checkBarHits();
+  if(gestureEnabled) drawFingerCursor();
+  drawCameraPreview();
+  drawGestureToggleBtn();
+  if(flashAlpha>0){noStroke();fill(0,155,140,flashAlpha);rect(0,0,width,height);}
+  drawSourceNote();
+}
+
+// ── 載入中畫面 ────────────────────────────────────────
+function drawLoadingScreen(){
+  const cx=width/2, cy=height/2;
+  textAlign(CENTER);
+  // 標題
+  textFont('Oxanium');textSize(26);textStyle(BOLD);fill(...C.teal);
+  text('臺北市教育統計儀表板',cx,cy-90);
+  textSize(12);textStyle(NORMAL);fill(...C.txt3);
+  text('正在從臺北市資料大平臺（data.taipei）擷取最新開放資料…',cx,cy-65);
+  // 載入條
+  const bw=320,bh=8,bx=cx-bw/2,by=cy-35;
+  noStroke();fill(...C.txt3,25);rect(bx,by,bw,bh,4);
+  fill(...C.teal);rect(bx,by,bw*loadProg,bh,4);
+  // 百分比
+  textFont('Oxanium');textSize(12);fill(...C.teal);
+  text(Math.round(loadProg*100)+'%',cx,cy-15);
+  // 旋轉動畫點
+  const t=frameCount*0.06;
+  for(let i=0;i<8;i++){
+    const a=(TWO_PI/8)*i+t;
+    const r=28, px2=cx+cos(a)*r, py2=cy+25+sin(a)*r;
+    const sz=map(sin(a-t),-1,1,4,11);
+    fill(...C.teal,map(sin(a-t),-1,1,50,220));
+    circle(px2,py2,sz);
+  }
+  // 狀態訊息
+  textFont('Noto Sans TC');textSize(12);fill(...C.txt2);
+  text(loadMsg,cx,cy+65);
+  // API 資訊
+  textSize(9);fill(...C.txt3);
+  text('BIG-5 CSV 解碼  ×  即時解析  ×  校數 / 學生數 / 班級數 三個資料集',cx,cy+82);
+  // 備用資料說明
+  textSize(9);fill(...C.txt3,160);
+  text('API 連線失敗時自動使用備用嵌入資料，功能完整不中斷',cx,cy+96);
+  textAlign(LEFT);
+  noStroke();
+}
+
+// ── 粒子 ─────────────────────────────────────────────
+function drawBgParts(){
+  noStroke();
+  bgParts.forEach(p=>{
+    fill(...p.col,Math.sin(p.life*PI)*p.alpha);circle(p.x,p.y,p.r*2);
+  });
+}
+
+// ── 頁首（含 API 來源標示）────────────────────────────
+function drawHeader(){
+  stroke(200,212,228);strokeWeight(1);line(0,62,width,62);noStroke();
+  textFont('Oxanium');textSize(20);textStyle(BOLD);fill(...C.teal);
+  text('臺北市教育統計儀表板',30,37);
+
+  // API 來源標示
+  const allLive=Object.values(dataSource).every(s=>s.includes('即時'));
+  const srcColor=allLive?C.teal:C.amber;
+  noStroke();fill(...srcColor,20);rect(30,44,allLive?120:180,14,7);
+  textFont('Noto Sans TC');textSize(9);textStyle(NORMAL);fill(...srcColor);
+  text(allLive?'✓ 即時 API 資料':'⚠ 部分使用備用資料',36,54);
+
+  textFont('Oxanium');textSize(12);textStyle(BOLD);fill(...C.teal);textAlign(RIGHT);
+  text(selectedYear+' 學年度',width-30,35);
+  if(compareYear!=null){fill(...C.amber);textSize(10);text('比較：'+compareYear+' 學年',width-30,50);}
+  textAlign(LEFT);textStyle(NORMAL);
+}
+
+// ── 學年度選擇列 ─────────────────────────────────────
+function drawYearBar(){
+  noStroke();fill(...C.surf);rect(0,Y0.yearStart,width,Y0.yearEnd-Y0.yearStart);
+  stroke(200,212,228);strokeWeight(1);line(0,Y0.yearStart,width,Y0.yearStart);line(0,Y0.yearEnd,width,Y0.yearEnd);noStroke();
+  textFont('Noto Sans TC');textSize(9);fill(...C.txt3);text('主年度',10,Y0.yearStart+18);
+  yearBtns.forEach((b,i)=>{
+    const sel=b.year===selectedYear,hov=i===hoverYearIdx||(fingerX>=b.x&&fingerX<=b.x+b.w&&fingerY>=b.y&&fingerY<=b.y+b.h);
+    noStroke();
+    if(sel){fill(...C.teal);rect(b.x,b.y,b.w,b.h,6);}
+    else{if(hov){fill(...C.teal,18);rect(b.x,b.y,b.w,b.h,6);}
+      stroke(hov?[...C.teal,140]:[...C.txt3,55]);strokeWeight(0.8);noFill();rect(b.x,b.y,b.w,b.h,6);noStroke();}
+    fill(sel?[...C.bg]:hov?[...C.teal]:[...C.txt3]);
+    textFont('Oxanium');textSize(11);textStyle(sel?BOLD:NORMAL);textAlign(CENTER,CENTER);
+    text(b.year,b.x+b.w/2,b.y+b.h/2);textAlign(LEFT,BASELINE);
+    if(sel){fill(...C.teal);circle(b.x+b.w/2,b.y+b.h+4,4);}
+    textStyle(NORMAL);
+  });
+  textFont('Noto Sans TC');textSize(9);fill(...C.amber);text('比較年',10,Y0.yearStart+50);
+  cmpBtns.forEach((b,i)=>{
+    const sel=b.year===compareYear,hov=i===hoverCmpIdx||(fingerX>=b.x&&fingerX<=b.x+b.w&&fingerY>=b.y&&fingerY<=b.y+b.h);
+    noStroke();
+    if(sel){fill(...C.amber);rect(b.x,b.y,b.w,b.h,5);}
+    else{if(hov){fill(...C.amber,18);rect(b.x,b.y,b.w,b.h,5);}
+      stroke(hov?[...C.amber,140]:[...C.txt3,40]);strokeWeight(0.6);noFill();rect(b.x,b.y,b.w,b.h,5);noStroke();}
+    fill(sel?[...C.bg]:hov?[...C.amber]:[...C.txt3,150]);
+    textFont('Oxanium');textSize(10);textStyle(sel?BOLD:NORMAL);textAlign(CENTER,CENTER);
+    text(b.year,b.x+b.w/2,b.y+b.h/2);textAlign(LEFT,BASELINE);
+    if(sel){fill(...C.amber);circle(b.x+b.w/2,b.y+b.h+3,3);}textStyle(NORMAL);
+  });
+  if(compareYear!=null&&selectedYear!==compareYear){
+    const yi=yearIdxOf(selectedYear),ci=yearIdxOf(compareYear);
+    if(yi>=0&&ci>=0){
+      const d=STUDENT_DATA[yi].total-STUDENT_DATA[ci].total;
+      const tx=width-285,ty=Y0.yearStart+50;
+      textFont('Noto Sans TC');textSize(9);fill(...C.txt3);text('國小學生差異（'+selectedYear+'−'+compareYear+'）：',tx,ty);
+      fill(d>0?[...C.teal]:[...C.coral]);textFont('Oxanium');textSize(10);
+      text((d>0?'▲ +':'▼ ')+Math.abs(d).toLocaleString()+' 人',tx+158,ty);textStyle(NORMAL);
+    }
+  }
+}
+
+// ── KPI 卡片 ─────────────────────────────────────────
+function drawKPIs(){
+  const items=[
+    {label:'國小學生人數',val:kpiA.students,unit:'人',col:C.teal},
+    {label:'高中職班級數',val:kpiA.senior,unit:'班',col:C.coral},
+    {label:'國民中學班級',val:kpiA.junior,unit:'班',col:C.blue},
+    {label:'國民小學班級',val:kpiA.elem,unit:'班',col:C.amber},
+    {label:'每班平均人數',val:kpiA.avgClass,unit:'人',col:C.violet},
+  ];
+  const cw=(width-60)/5-8;
+  items.forEach((k,i)=>{
+    const x=30+i*(cw+8),y=Y0.kpiStart,h=38;
+    noStroke();fill(...C.card);rect(x,y,cw,h,8);
+    fill(...k.col);rect(x,y,3,h,8,0,0,8);
+    stroke(205,215,230);strokeWeight(0.5);noFill();rect(x,y,cw,h,8);noStroke();
+    textFont('Noto Sans TC');textSize(9);fill(...C.txt3);text(k.label,x+10,y+12);
+    const vs=Math.round(k.val).toLocaleString();
+    textFont('Oxanium');textSize(16);textStyle(BOLD);fill(...k.col);text(vs,x+10,y+31);
+    textFont('Noto Sans TC');textSize(9);fill(...k.col,180);text(k.unit,x+12+textWidth(vs),y+31);
+    const yi=yearIdxOf(selectedYear),ci=compareYear!=null?yearIdxOf(compareYear):-1;
+    if(ci>=0){
+      const cii=classIdxOf(compareYear);
+      if(cii>=0){
+        const cmpV=[STUDENT_DATA[ci].total,CLASS_DATA[cii].senior,CLASS_DATA[cii].junior,
+          CLASS_DATA[cii].elem,Math.round(STUDENT_DATA[ci].total/CLASS_DATA[cii].elem)];
+        const delta=kpiT[['students','senior','junior','elem','avgClass'][i]]-cmpV[i];
+        if(delta!==0){textFont('Oxanium');textSize(8);textStyle(NORMAL);
+          fill(delta>0?[...C.teal]:[...C.coral]);textAlign(RIGHT);
+          text((delta>0?'▲':' ▼')+Math.abs(delta).toLocaleString(),x+cw-6,y+12);textAlign(LEFT);}
+      }
+    }
+    textStyle(NORMAL);
+  });
+}
+
+// ── 頁籤列 ───────────────────────────────────────────
+function drawTabBar(){
+  noStroke();fill(...C.surf);rect(0,Y0.tabStart,width,Y0.tabEnd-Y0.tabStart);
+  stroke(200,212,228);strokeWeight(1);line(0,Y0.tabStart,width,Y0.tabStart);line(0,Y0.tabEnd,width,Y0.tabEnd);noStroke();
+  tabBtns.forEach((b,i)=>{
+    const sel=i===activeTab,hov=i===hoverTabIdx||(fingerX>=b.x&&fingerX<=b.x+b.w&&fingerY>=b.y&&fingerY<=b.y+b.h);
+    if(sel){noStroke();fill(...C.teal,20);rect(b.x,b.y,b.w,b.h,6,6,0,0);}
+    textFont('Noto Sans TC');textSize(12);
+    fill(sel?[...C.teal]:hov?[...C.teal,200]:[...C.txt3]);
+    textAlign(CENTER,CENTER);text(b.label,b.x+b.w/2,b.y+b.h/2);textAlign(LEFT,BASELINE);
+    if(sel){stroke(...C.teal);strokeWeight(2.5);line(b.x,b.y+b.h,b.x+b.w,b.y+b.h);noStroke();}
+  });
+}
+
+// ── 工具函式 ─────────────────────────────────────────
+function secTitle(t,x,y){
+  textFont('Noto Sans TC');textSize(12);textStyle(NORMAL);fill(...C.txt2);text(t,x,y);
+  stroke(...C.teal,120);strokeWeight(1.5);line(x,y+3,x+textWidth(t),y+3);noStroke();
+}
+function subNote(t,x,y){textFont('Noto Sans TC');textSize(9);fill(...C.txt3);text(t,x,y);}
+function drawClickFx(){noStroke();clickFx.forEach(p=>{fill(...p.col,p.a);circle(p.x,p.y,p.r*2);});}
+function addClickFx(x,y,col){
+  for(let i=0;i<16;i++){const a=random(TWO_PI),s=random(1.5,5);clickFx.push({x,y,vx:cos(a)*s,vy:sin(a)*s,r:random(2,5),a:220,col});}
+}
+function drawTooltip(){
+  if(!tooltip.show) return;
+  const lh=16,pad=10;textFont('Noto Sans TC');textSize(10);
+  const tw=Math.max(...tooltip.lines.filter(Boolean).map(l=>textWidth(l)));
+  const bw=tw+pad*2,bh=tooltip.lines.filter(Boolean).length*lh+pad*2;
+  let tx=tooltip.x-bw/2,ty=tooltip.y-bh-14;
+  tx=constrain(tx,4,width-bw-4);ty=constrain(ty,4,height-bh-4);
+  noStroke();fill(240,245,252,240);rect(tx,ty,bw,bh,8);
+  stroke(190,205,225);strokeWeight(1);noFill();rect(tx,ty,bw,bh,8);noStroke();
+  tooltip.lines.filter(Boolean).forEach((l,i)=>{fill(i===0?[...C.teal]:[...C.txt2]);text(l,tx+pad,ty+pad+lh*i+12);});
+}
+function checkBarHits(){
+  tooltip.show=false;
+  const hx=fingerX>=0?fingerX:mouseX, hy=fingerX>=0?fingerY:mouseY;
+  barHits.forEach(b=>{
+    if(hx>=b.x&&hx<=b.x+b.w&&hy>=b.y&&hy<=b.y+b.h){
+      tooltip.show=true;tooltip.x=b.x+b.w/2;tooltip.y=b.y;tooltip.lines=b.lines;
+    }
+  });
+}
+
+// ── 游標 ─────────────────────────────────────────────
+function drawFingerCursor(){
+  if(fingerX<0||!gestureEnabled||!gestureReady) return;
+  const norm=!pinchApproaching&&!isPinching, appr=pinchApproaching&&!isPinching, pinch=isPinching;
+  const prog=pinch?1:appr?constrain(map(pinchDist,65,38,0,1),0,1):0;
+  noStroke();
+  fill(200,50,50,lerp(20,65,prog));circle(fingerX,fingerY,lerp(50,80,prog));
+  fill(200,50,50,lerp(130,220,prog));circle(fingerX,fingerY,lerp(26,20,prog));
+  fill(255);circle(fingerX,fingerY,lerp(10,8,prog));
+  if(appr||pinch){
+    const rr=lerp(44,20,prog);
+    stroke(200,50,50,lerp(120,220,prog));strokeWeight(lerp(1.5,3,prog));noFill();circle(fingerX,fingerY,rr*2);
+    stroke(200,50,50,200);strokeWeight(3);arc(fingerX,fingerY,rr*2+10,rr*2+10,-HALF_PI,-HALF_PI+lerp(0,TWO_PI,prog));noStroke();
+  }
+  if(pinch){
+    stroke(200,50,50,190);strokeWeight(2.5);noFill();circle(fingerX,fingerY,55+Math.sin(frameCount*0.3)*7);noStroke();
+    fill(200,50,50,215);rect(fingerX-22,fingerY-46,44,17,4);
+    fill(255);textFont('Oxanium');textSize(9);textStyle(BOLD);textAlign(CENTER);text('CLICK',fingerX,fingerY-34);textAlign(LEFT);textStyle(NORMAL);
+  }
+  if(appr){
+    fill(200,50,50,lerp(0,185,prog));rect(fingerX-30,fingerY-46,60,17,4);
+    fill(255);textFont('Noto Sans TC');textSize(9);textStyle(BOLD);textAlign(CENTER);text('準備點擊',fingerX,fingerY-34);textAlign(LEFT);textStyle(NORMAL);
+  }
+  const cs=norm?11:lerp(11,5,prog),gap=norm?6:lerp(6,4,prog);
+  stroke(200,50,50,lerp(160,240,prog));strokeWeight(lerp(1.8,2.5,prog));
+  line(fingerX-cs-gap,fingerY,fingerX-gap,fingerY);line(fingerX+gap,fingerY,fingerX+cs+gap,fingerY);
+  line(fingerX,fingerY-cs-gap,fingerX,fingerY-gap);line(fingerX,fingerY+gap,fingerX,fingerY+cs+gap);
+  noStroke();
+}
+
+// ── 攝影機預覽 ────────────────────────────────────────
+function drawCameraPreview(){
+  const pw=160,ph=120,px=width-pw-16,py=height-ph-80;
+  noStroke();fill(...C.surf);rect(px-6,py-6,pw+12,ph+30,10);
+  stroke(200,210,225);strokeWeight(1);noFill();rect(px-6,py-6,pw+12,ph+30,10);noStroke();
+  if(video&&video.width>0){
+    push();translate(px+pw,py);scale(-1,1);image(video,0,0,pw,ph);pop();
+    if(fingerX>=0&&gestureEnabled){
+      const pvx=map(fingerX,0,width,px+pw,px),pvy=map(fingerY,0,height,py,py+ph);
+      noStroke();fill(200,50,50,220);circle(pvx,pvy,9);
+      stroke(200,50,50,160);strokeWeight(1.5);noFill();circle(pvx,pvy,17);noStroke();
+      if(hands.length>0){
+        const thm=hands[0].keypoints[4];
+        const tvx=map(map(thm.x,0,camW,0,width),0,width,px+pw,px),tvy=map(thm.y,0,camH,py,py+ph);
+        fill(255,180,0,200);circle(tvx,tvy,6);
+      }
+    }
+    if(isPinching){noStroke();fill(200,50,50,40);rect(px,py,pw,ph);stroke(200,50,50,200);strokeWeight(2);noFill();rect(px,py,pw,ph);noStroke();}
+    if(!gestureEnabled){noStroke();fill(255,255,255,160);rect(px,py,pw,ph,4);fill(...C.txt3);textFont('Noto Sans TC');textSize(10);textAlign(CENTER);text('手勢辨識已停用',px+pw/2,py+ph/2);textAlign(LEFT);}
+  }else{
+    fill(210,220,235);noStroke();rect(px,py,pw,ph,4);
+    fill(150,165,185);textFont('Noto Sans TC');textSize(10);textAlign(CENTER);text(gestureEnabled?'攝影機啟動中…':'已停用',px+pw/2,py+ph/2);textAlign(LEFT);
+  }
+  textFont('Noto Sans TC');textSize(9);fill(...C.txt3);textAlign(CENTER);
+  text(gestureEnabled?gestureMsg:'滑鼠模式',px+pw/2,py+ph+14);
+  if(gestureEnabled&&hands.length>0&&gestureReady){
+    const isAppr=pinchApproaching&&!isPinching;
+    fill(isPinching?[...C.coral]:isAppr?[...C.amber]:[...C.txt3]);
+    text(isPinching?'已捏合 ✓':isAppr?'趨近中（'+Math.round(pinchDist)+'px）':'距離：'+Math.round(pinchDist)+'px',px+pw/2,py+ph+24);
+  }
+  textAlign(LEFT);
+}
+
+// ── 手勢開關按鈕 ─────────────────────────────────────
+function drawGestureToggleBtn(){
+  const bw=132,bh=32,bx=width-bw-16,by=height-bh-40;
+  gestureBtnRect={x:bx,y:by,w:bw,h:bh};
+  const on=gestureEnabled,hov=(mouseX>=bx&&mouseX<=bx+bw&&mouseY>=by&&mouseY<=by+bh)||(fingerX>=bx&&fingerX<=bx+bw&&fingerY>=by&&fingerY<=by+bh);
+  noStroke();fill(on?[...C.teal,hov?35:20]:[...C.txt3,hov?22:12]);rect(bx,by,bw,bh,16);
+  stroke(on?[...C.teal,hov?220:150]:[...C.txt3,hov?120:70]);strokeWeight(1.5);noFill();rect(bx,by,bw,bh,16);noStroke();
+  fill(on?[...C.teal,60]:[...C.txt3,40]);rect(bx+10,by+bh/2-7,28,14,7);
+  fill(on?[...C.teal]:[...C.txt3]);circle(on?bx+31:bx+17,by+bh/2,12);
+  fill(on?[...C.teal]:[...C.txt3]);textFont('Noto Sans TC');textSize(10);
+  text(on?'手勢辨識 開啟':'手勢辨識 關閉',bx+46,by+bh/2+4);
+}
+
+// ── 資料來源標注 ─────────────────────────────────────
+function drawSourceNote(){
+  textFont('Noto Sans TC');textSize(8.5);fill(...C.txt3);textAlign(RIGHT);
+  const allLive=Object.values(dataSource).every(s=>s.includes('即時'));
+  text((allLive?'✓ 即時 API':'備用資料')+' ｜ 校數（rid:591e2881） ｜ 學生數（rid:e9879dd5） ｜ 班級數（rid:ca5699b7） ｜ data.taipei',width-16,height-5);
+  textAlign(LEFT);
+}
+
+/* ════════════════════════════════════════════════════
+   TAB 0：學校分佈
+════════════════════════════════════════════════════ */
+function drawTabSchool(){
+  const availH=height-Y0.chartStart-20,chipH=72,midX=width/2;
+  drawDistrictChips(30,4,chipH);
+  const lSecY=chipH+20;
+  secTitle('各學制學校數（依選取行政區加總）',30,lSecY);
+  subNote('虛線=全市基準，實心=篩選後數量｜資料年度：'+schoolsDataYear+'年',30,lSecY+14);
+  const barW=50,gap=14,totalBW=5*barW+4*gap;
+  const sX=30+(midX-60-totalBW)/2,baseY=availH*0.82,maxH=availH*0.42;
+  SCHOOL_META.forEach((s,i)=>{
+    const x=sX+i*(barW+gap),ghostH=SCHOOL_ALL[i]/Math.max(...SCHOOL_ALL,1)*maxH;
+    stroke(...s.c,60);strokeWeight(1.2);drawingContext.setLineDash([3,3]);noFill();
+    rect(x,baseY-ghostH,barW,ghostH,5,5,0,0);drawingContext.setLineDash([]);noStroke();
+    const h=schoolNorm[i]*maxH;
+    noStroke();fill(...s.c,15);rect(x-3,baseY-h-3,barW+6,h+6,7);
+    fill(...s.c,220);rect(x,baseY-h,barW,h,5,5,0,0);
+    fill(255,255,255,40);rect(x,baseY-h,barW,min(8,h),5,5,0,0);
+    textFont('Oxanium');textSize(12);textStyle(BOLD);fill(...s.c);textAlign(CENTER);
+    text(filteredCnts[i],x+barW/2,baseY-h-8);
+    textSize(9);textStyle(NORMAL);fill(...s.c,130);text('/'+SCHOOL_ALL[i],x+barW/2,baseY-ghostH-6);
+    textFont('Noto Sans TC');textSize(10);fill(...C.txt2);text(s.label,x+barW/2,baseY+15);textAlign(LEFT);
+    barHits.push({x,y:baseY-Math.max(h,ghostH)-4,w:barW,h:Math.max(h,ghostH)+4,
+      lines:[s.label,'篩選：'+filteredCnts[i]+' 所','全市：'+SCHOOL_ALL[i]+' 所']});
+  });
+  stroke(200,212,228);strokeWeight(1);line(30,baseY,midX-20,baseY);noStroke();
+  const rx=midX+10,rw=width-rx-30;
+  secTitle('各行政區學校總數（'+schoolsDataYear+'年）',rx,lSecY);
+  subNote('亮色=已選取，陰影=未選取',rx,lSecY+14);
+  const rowH=min(availH*0.80/DIST_DATA.length,28),maxBW=rw*0.58,lbW=36;
+  DIST_DATA.forEach((d,i)=>{
+    const dy=lSecY+28+i*(rowH+2),bw=(i<distNorm.length?distNorm[i]:0)*maxBW,a=i<distAlpha.length?distAlpha[i]:1;
+    const sel=selDistSet.has(i);
+    noStroke();fill(210,220,235,10);rect(rx+lbW,dy,maxBW,rowH-4,3);
+    const hue=d.total/DIST_MAX;
+    const dc=lerpColor(color(...C.blue),color(...C.teal),hue);
+    const [cr,cg,cb]=[red(dc),green(dc),blue(dc)];
+    fill(cr,cg,cb,200*a);rect(rx+lbW,dy,bw,rowH-4,3);
+    fill(255,255,255,30*a);rect(rx+lbW,dy,bw,(rowH-4)/2,3,3,0,0);
+    if(!sel){stroke(cr,cg,cb,40);strokeWeight(0.5);drawingContext.setLineDash([2,3]);
+      for(let xi=rx+lbW;xi<rx+lbW+bw;xi+=5)line(xi,dy,xi,dy+rowH-4);
+      drawingContext.setLineDash([]);noStroke();}
+    if(sel){noStroke();fill(...C.teal);circle(rx+lbW-9,dy+(rowH-4)/2,5);}
+    else{stroke(...C.txt3,50);strokeWeight(0.5);noFill();circle(rx+lbW-9,dy+(rowH-4)/2,5);noStroke();}
+    textFont('Noto Sans TC');textSize(10);fill(sel?[...C.txt]:[cr,cg,cb,150]);textAlign(RIGHT);
+    text(d.name,rx+lbW-15,dy+rowH-6);
+    textFont('Oxanium');textSize(10);fill(cr,cg,cb,255*a);textAlign(LEFT);
+    text(d.count,rx+lbW+bw+5,dy+rowH-6);
+    barHits.push({x:rx+lbW,y:dy,w:bw,h:rowH-4,
+      lines:[d.name+' 行政區','學校總數：'+d.total+' 所',sel?'✓ 已選取':'○ 未選取']});
+  });
+}
+function drawDistrictChips(ox,oy,sectionH){
+  noStroke();fill(...C.surf,220);rect(ox-5,oy-2,width-ox*2+10,sectionH+4,8);
+  stroke(200,212,228);strokeWeight(0.8);noFill();rect(ox-5,oy-2,width-ox*2+10,sectionH+4,8);noStroke();
+  textFont('Noto Sans TC');textSize(9);fill(...C.txt3);text('行政區篩選',ox,oy+10);
+  const btnX=ox+textWidth('行政區篩選')+8;
+  drawSmallBtn(btnX,oy+1,38,15,'全選');drawSmallBtn(btnX+44,oy+1,38,15,'清除');
+  distChips.forEach((ch,i)=>{
+    const cx=ox+ch.x,cy=oy+22+ch.y;
+    const sel=selDistSet.has(ch.idx),hov=i===hoverDistIdx||(fingerX>=cx&&fingerX<=cx+ch.w&&fingerY>=cy&&fingerY<=cy+ch.h);
+    const d=DIST_DATA[ch.idx],hue=d?d.total/DIST_MAX:0;
+    const dc=lerpColor(color(...C.blue),color(...C.teal),hue);
+    const [cr,cg,cb]=[red(dc),green(dc),blue(dc)];
+    noStroke();
+    if(sel){fill(cr,cg,cb,220);rect(cx,cy,ch.w,ch.h,5);fill(255,255,255,230);circle(cx+9,cy+ch.h/2,6);fill(255);}
+    else{if(hov){fill(cr,cg,cb,25);rect(cx,cy,ch.w,ch.h,5);}
+      stroke(cr,cg,cb,hov?110:45);strokeWeight(0.8);noFill();rect(cx,cy,ch.w,ch.h,5);noStroke();
+      fill(cr,cg,cb,hov?200:120);circle(cx+9,cy+ch.h/2,6);fill(hov?[...C.txt2]:[...C.txt3]);}
+    textFont('Noto Sans TC');textSize(9);textAlign(LEFT,CENTER);text(ch.name,cx+18,cy+ch.h/2);textAlign(LEFT,BASELINE);
+  });
+}
+function drawSmallBtn(x,y,w,h,lbl){
+  const hov=(mouseX>=x&&mouseX<=x+w&&mouseY>=y&&mouseY<=y+h)||(fingerX>=x&&fingerX<=x+w&&fingerY>=y&&fingerY<=y+h);
+  noStroke();fill(hov?[...C.teal,30]:[...C.txt3,12]);rect(x,y,w,h,4);
+  stroke(hov?[...C.teal,160]:[...C.txt3,60]);strokeWeight(0.5);noFill();rect(x,y,w,h,4);noStroke();
+  textFont('Noto Sans TC');textSize(8);fill(hov?[...C.teal]:[...C.txt3]);textAlign(CENTER,CENTER);
+  text(lbl,x+w/2,y+h/2);textAlign(LEFT,BASELINE);
+}
+
+/* ════════════════════════════════════════════════════
+   TAB 1：學生趨勢（動態年度）
+════════════════════════════════════════════════════ */
+function drawTabTrend(){
+  const availH=height-Y0.chartStart-20,midX=width*0.57;
+  secTitle('國小學生人數趨勢',30,14);
+  subNote('資料來源：'+dataSource.students,30,28);
+  const lx=62,ly=42,lw=midX-88,lh=availH*0.66;
+  const N=STUDENT_DATA.length;
+  if(!N){return;}
+  const vals=STUDENT_DATA.map(d=>d.total);
+  const minV=Math.min(...vals)*0.985,maxV=Math.max(...vals)*1.01;
+  const yi=yearIdxOf(selectedYear),ci=compareYear!=null?yearIdxOf(compareYear):-1;
+  const pts=STUDENT_DATA.map((d,i)=>({x:lx+(N>1?i/(N-1):0)*lw,y:ly+lh-((d.total-minV)/(maxV-minV))*lh}));
+
+  for(let gi=0;gi<=4;gi++){
+    const gy=ly+lh-lh*(gi/4);
+    stroke(200,212,228,80);strokeWeight(0.5);line(lx,gy,lx+lw,gy);noStroke();
+    textFont('Oxanium');textSize(9);fill(...C.txt3);textAlign(RIGHT);
+    text(((minV+(maxV-minV)*(gi/4))/1000).toFixed(0)+'K',lx-4,gy+3);textAlign(LEFT);
+  }
+  if(ci>=0&&yi>=0&&ci!==yi){
+    const xiA=Math.min(yi,ci),xiB=Math.max(yi,ci);
+    noStroke();fill(...C.amber,15);rect(pts[xiA].x,ly,(pts[xiB].x-pts[xiA].x),lh);
+  }
+  // 填充+折線
+  const drawPct=Math.floor(lineDrawPct*(N-1));
+  noStroke();fill(...C.teal,18);
+  beginShape();vertex(pts[0].x,ly+lh);
+  for(let i=0;i<=Math.min(drawPct,N-1);i++)curveVertex(pts[i].x,pts[i].y);
+  vertex(pts[Math.min(drawPct,N-1)].x,ly+lh);endShape(CLOSE);
+  stroke(...C.teal,200);strokeWeight(2.5);noFill();beginShape();pts.forEach(p=>curveVertex(p.x,p.y));endShape();noStroke();
+
+  pts.forEach((p,i)=>{
+    const sel=i===yi,cmp=i===ci,pulse=1+Math.sin(frameCount*0.08)*0.3;
+    if(sel){fill(...C.teal,35);circle(p.x,p.y,24*pulse);fill(...C.teal,90);circle(p.x,p.y,14*pulse);}
+    if(cmp&&!sel){fill(...C.amber,30);circle(p.x,p.y,20*pulse);fill(...C.amber,80);circle(p.x,p.y,12*pulse);}
+    fill(sel?[...C.teal]:cmp?[...C.amber]:[...C.txt3,180]);circle(p.x,p.y,sel||cmp?9:5);
+    fill(255);circle(p.x,p.y,sel||cmp?4:2);
+  });
+  const drawVL=(pidx,col,yr)=>{
+    if(pidx<0||pidx>=pts.length)return;
+    stroke(...col,90);strokeWeight(1.5);drawingContext.setLineDash([4,4]);
+    line(pts[pidx].x,ly,pts[pidx].x,ly+lh);drawingContext.setLineDash([]);noStroke();
+    fill(...col,200);rect(pts[pidx].x-20,ly-19,40,16,4);
+    textFont('Oxanium');textSize(9);textStyle(BOLD);fill(255);textAlign(CENTER);
+    text(yr,pts[pidx].x,ly-8);textAlign(LEFT);textStyle(NORMAL);
+  };
+  drawVL(yi,C.teal,selectedYear);
+  if(ci>=0&&ci!==yi)drawVL(ci,C.amber,compareYear);
+  pts.forEach((p,i)=>{
+    textFont('Oxanium');textSize(9);fill(i===yi?[...C.teal]:i===ci?[...C.amber]:[...C.txt3]);
+    textAlign(CENTER);text(STUDENT_DATA[i].year,p.x,ly+lh+13);
+  });textAlign(LEFT);
+  stroke(200,212,228);strokeWeight(1);line(lx,ly+lh,lx+lw,ly+lh);noStroke();
+
+  // 年級長條
+  const rx=midX+10,rw=width-rx-30;
+  if(yi<0)return;
+  secTitle('各年級學生人數（'+selectedYear+'學年）',rx,14);
+  const sd=STUDENT_DATA[yi],cs=ci>=0?STUDENT_DATA[ci]:null;
+  const maxGv=Math.max(...sd.g,...(cs?cs.g:[]));
+  const gbW=(rw-20)/6-8,gbBase=availH*0.74,gbMaxH=availH*0.52;
+  sd.g.forEach((v,i)=>{
+    const x=rx+i*(gbW+8),h=gradeNorm[i]*gbMaxH,gc=GRADE_COLORS[i];
+    if(cs){
+      const ch=gradeNormC[i]*gbMaxH;
+      stroke(...C.amber,160);strokeWeight(1.5);drawingContext.setLineDash([3,3]);noFill();
+      rect(x,gbBase-ch,gbW,ch,4,4,0,0);drawingContext.setLineDash([]);noStroke();
+      const delta=v-cs.g[i];
+      textFont('Oxanium');textSize(9);textStyle(BOLD);fill(delta>=0?[...C.teal]:[...C.coral]);textAlign(CENTER);
+      text((delta>=0?'+':'')+delta.toLocaleString(),x+gbW/2,gbBase-Math.max(h,ch)-18);textStyle(NORMAL);
+    }
+    noStroke();fill(...gc,15);rect(x-3,gbBase-h-3,gbW+6,h+6,7);
+    fill(...gc,220);rect(x,gbBase-h,gbW,h,5,5,0,0);fill(255,255,255,40);rect(x,gbBase-h,gbW,min(8,h),5,5,0,0);
+    textFont('Oxanium');textSize(10);textStyle(BOLD);fill(...gc);textAlign(CENTER);text((v/1000).toFixed(1)+'K',x+gbW/2,gbBase-h-8);
+    textFont('Noto Sans TC');textSize(9);textStyle(NORMAL);fill(...C.txt2);text(GRADE_LABELS[i]+'年級',x+gbW/2,gbBase+15);textAlign(LEFT);
+    barHits.push({x,y:gbBase-h-3,w:gbW,h:h+3,lines:[GRADE_LABELS[i]+'年級',selectedYear+'：'+v.toLocaleString()+' 人',cs?compareYear+'：'+cs.g[i].toLocaleString()+' 人':'']});
+  });
+  stroke(200,212,228);strokeWeight(1);line(rx,gbBase,rx+rw,gbBase);noStroke();
+  textFont('Noto Sans TC');textSize(10);fill(...C.txt3);text('合計：',rx,availH*0.84);
+  textFont('Oxanium');textSize(12);textStyle(BOLD);fill(...C.teal);text(sd.total.toLocaleString()+' 人',rx+35,availH*0.84);textStyle(NORMAL);
+}
+
+/* ════════════════════════════════════════════════════
+   TAB 2：班級統計（動態年度）
+════════════════════════════════════════════════════ */
+function drawTabClass(){
+  const availH=height-Y0.chartStart-20,midX=width*0.61;
+  secTitle('各級學校班級數趨勢',30,14);
+  subNote('資料來源：'+dataSource.classes,30,28);
+  const lx=65,ly=42,lw=midX-90,lh=availH*0.70;
+  const N=CLASS_DATA.length;
+  if(!N) return;
+  const allV=CLASS_DATA.flatMap(d=>[d.senior,d.junior,d.elem]);
+  const minC=Math.min(...allV)*0.97,maxC=Math.max(...allV)*1.02;
+  const yi=classIdxOf(selectedYear),ci=compareYear!=null?classIdxOf(compareYear):-1;
+
+  if(ci>=0&&yi>=0&&ci!==yi){
+    const xiA=Math.min(yi,ci),xiB=Math.max(yi,ci);
+    const x1=lx+(N>1?xiA/(N-1):0)*lw,x2=lx+(N>1?xiB/(N-1):0)*lw;
+    noStroke();fill(...C.amber,12);rect(x1,ly,x2-x1,lh);
+  }
+  for(let gi=0;gi<=4;gi++){
+    const gy=ly+lh-lh*(gi/4);
+    stroke(200,212,228,80);strokeWeight(0.5);line(lx,gy,lx+lw,gy);noStroke();
+    textFont('Oxanium');textSize(9);fill(...C.txt3);textAlign(RIGHT);
+    text(((minC+(maxC-minC)*(gi/4))/1000).toFixed(1)+'K',lx-4,gy+3);textAlign(LEFT);
+  }
+  const lineDefs=[{key:'senior',c:C.coral,dash:[6,4]},{key:'junior',c:C.blue,dash:[3,4]},{key:'elem',c:C.teal,dash:[]}];
+  lineDefs.forEach(ln=>{
+    const pts=CLASS_DATA.map((d,i)=>({x:lx+(N>1?i/(N-1):0)*lw,y:ly+lh-((d[ln.key]-minC)/(maxC-minC))*lh}));
+    stroke(...ln.c,210);strokeWeight(ln.key==='elem'?2.5:1.8);noFill();drawingContext.setLineDash(ln.dash);
+    beginShape();pts.forEach(p=>curveVertex(p.x,p.y));endShape();drawingContext.setLineDash([]);noStroke();
+    pts.forEach((p,i)=>{
+      const sel=i===yi,cmp=i===ci;
+      if(sel){fill(...ln.c,35);circle(p.x,p.y,18+Math.sin(frameCount*.08)*4);}
+      if(cmp&&!sel){fill(...C.amber,30);circle(p.x,p.y,15);}
+      fill(sel?[...ln.c]:cmp?[...C.amber]:[...C.txt3,150]);circle(p.x,p.y,sel||cmp?8:4);
+      fill(255);circle(p.x,p.y,sel||cmp?3:1.5);
+    });
+  });
+  const drawVL=(pidx,col,yr)=>{
+    if(pidx<0||pidx>=N)return;
+    const px=lx+(N>1?pidx/(N-1):0)*lw;
+    stroke(...col,80);strokeWeight(1.2);drawingContext.setLineDash([4,4]);line(px,ly,px,ly+lh);drawingContext.setLineDash([]);noStroke();
+    fill(...col,195);rect(px-20,ly-19,40,16,4);
+    textFont('Oxanium');textSize(9);textStyle(BOLD);fill(255);textAlign(CENTER);text(yr,px,ly-8);textAlign(LEFT);textStyle(NORMAL);
+  };
+  drawVL(yi,C.teal,selectedYear);if(ci>=0&&ci!==yi)drawVL(ci,C.amber,compareYear);
+  CLASS_DATA.forEach((d,i)=>{
+    const px=lx+(N>1?i/(N-1):0)*lw;
+    textFont('Oxanium');textSize(9);fill(i===yi?[...C.teal]:i===ci?[...C.amber]:[...C.txt3]);textAlign(CENTER);text(d.year,px,ly+lh+13);
+  });textAlign(LEFT);
+  stroke(200,212,228);strokeWeight(1);line(lx,ly+lh,lx+lw,ly+lh);noStroke();
+  const legY=availH*0.88;
+  [['高中職',C.coral,[6,4]],['國民中學',C.blue,[3,4]],['國民小學',C.teal,[]]].forEach(([lbl,c,d],i)=>{
+    stroke(...c,200);strokeWeight(1.8);drawingContext.setLineDash(d);line(30+i*105,legY-3,44+i*105,legY-3);drawingContext.setLineDash([]);noStroke();
+    textFont('Noto Sans TC');textSize(10);fill(...C.txt2);text(lbl,48+i*105,legY);
+  });
+
+  // 右：班級長條
+  const rx=midX+10,rw=width-rx-30;
+  if(yi<0) return;
+  const cd=CLASS_DATA[yi],cc=ci>=0?CLASS_DATA[ci]:null;
+  secTitle(selectedYear+' 學年度 班級數',rx,14);
+  const clsDef=[{label:'高中職',raw:cd.senior,c:C.coral},{label:'國民中學',raw:cd.junior,c:C.blue},{label:'國民小學',raw:cd.elem,c:C.teal}];
+  const cbW=(rw-40)/3-10,cbBase=availH*0.73,cbMaxH=availH*0.54;
+  clsDef.forEach((cl,i)=>{
+    const x=rx+i*(cbW+12),h=classNorm[i]*cbMaxH;
+    if(cc){
+      const gh=classNormC[i]*cbMaxH;
+      stroke(...C.amber,160);strokeWeight(1.5);drawingContext.setLineDash([3,3]);noFill();rect(x,cbBase-gh,cbW,gh,5,5,0,0);drawingContext.setLineDash([]);noStroke();
+      const cmpR=[cc.senior,cc.junior,cc.elem][i],delta=cl.raw-cmpR;
+      textFont('Oxanium');textSize(10);textStyle(BOLD);fill(delta>=0?[...C.teal]:[...C.coral]);textAlign(CENTER);
+      text((delta>=0?'+':'')+delta,x+cbW/2,cbBase-Math.max(h,gh)-12);textStyle(NORMAL);
+    }else if(yi>0){
+      const prev=CLASS_DATA[yi-1],pa=[prev.senior,prev.junior,prev.elem],d=cl.raw-pa[i];
+      textFont('Oxanium');textSize(10);textStyle(BOLD);fill(d>=0?[...C.teal]:[...C.coral]);textAlign(CENTER);
+      text((d>=0?'▲ ':' ▼')+Math.abs(d),x+cbW/2,cbBase-h-12);textStyle(NORMAL);
+    }
+    noStroke();fill(...cl.c,15);rect(x-3,cbBase-h-3,cbW+6,h+6,7);
+    fill(...cl.c,220);rect(x,cbBase-h,cbW,h,5,5,0,0);fill(255,255,255,40);rect(x,cbBase-h,cbW,min(8,h),5,5,0,0);
+    textFont('Oxanium');textSize(15);textStyle(BOLD);fill(...cl.c);textAlign(CENTER);text(cl.raw.toLocaleString(),x+cbW/2,cbBase+17);
+    textFont('Noto Sans TC');textSize(10);textStyle(NORMAL);fill(...C.txt2);text(cl.label,x+cbW/2,cbBase+30);textAlign(LEFT);
+    barHits.push({x,y:cbBase-h-3,w:cbW,h:h+3,
+      lines:[cl.label,selectedYear+'：'+cl.raw.toLocaleString()+' 班',cc?compareYear+'：'+[cc.senior,cc.junior,cc.elem][i].toLocaleString()+' 班':'']});
+  });
+  stroke(200,212,228);strokeWeight(1);line(rx,cbBase,rx+rw,cbBase);noStroke();
+  textFont('Noto Sans TC');textSize(10);fill(...C.txt3);text('三級合計：',rx,availH*0.85);
+  textFont('Oxanium');textSize(13);textStyle(BOLD);fill(...C.teal);
+  text((cd.senior+cd.junior+cd.elem).toLocaleString()+' 班',rx+55,availH*0.85);textStyle(NORMAL);
+}
+
+/* ════════════════════════════════════════════════════
+   滑鼠事件
+════════════════════════════════════════════════════ */
+function mouseMoved(){updateHoverState(mouseX,mouseY);cursor(hoverYearIdx>=0||hoverCmpIdx>=0||hoverTabIdx>=0||hoverDistIdx>=0?HAND:ARROW);}
+function mousePressed(){handleClick(mouseX,mouseY);}
+function windowResized(){resizeCanvas(windowWidth,windowHeight);buildButtons();}
+
+</script>
+</body>
+</html>
